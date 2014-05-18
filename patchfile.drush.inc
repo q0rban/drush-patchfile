@@ -67,7 +67,7 @@ function drush_patchfile_patch_status() {
       $project_extra .= ' ' . dt('(missing)');
     }
 
-    foreach ($project_info['patch'] as $patch) {
+    foreach ($project_info as $patch) {
       $rows[] = array(
         $project_name . $project_extra,
         _drush_patchfile_patch_short_name($patch),
@@ -136,9 +136,9 @@ function drush_patchfile_patch_add($project_name, $patch_url) {
   _drush_patchfile_preprocess_local_file_url($patch, $file);
 
   // Check to see if this project is already patched with this patch.
-  $projects = drush_patchfile_get_patched_projects();
+  $projects = drush_patchfile_get_patched_projects($file);
   if (isset($projects[$project_name])) {
-    if (in_array($patch, $projects[$project_name]['patch'])) {
+    if (in_array($patch, $projects[$project_name])) {
       return drush_set_error('DRUSH_PATCH_ALREADY_LISTED', dt("The patch @patch is already listed as a patch for @project in @file.", $args));
     }
   }
@@ -195,114 +195,40 @@ function _drush_patchfile_patch_short_name($patch) {
   return $return;
 }
 
-function drush_patchfile_get_patched_projects($patchfile = NULL, $use_cache = FALSE) {
-  $projects = array();
-
-  if (!isset($patchfile)) {
-    $patchfile = drush_get_option('patch-file');
+function drush_patchfile_engine($file = NULL, $cache = TRUE) {
+  if (!isset($file)) {
+    $file = drush_get_option('patch-file');
   }
 
-  if (!empty($patchfile)) {
-    // Cache not only by filename, but also by the time the file was modified
-    // so that a drush cache clear is not necessary to pick up changes.
-    $cid = _drush_patchfile_get_file_cid($patchfile);
-    if ($cid && $use_cache && $cache = drush_cache_get($cid)) {
-      $projects = $cache->data;
-    }
-    else {
-      $projects = drush_patchfile_parse_info_file($patchfile);
-      if ($cid && $use_cache) {
-        drush_cache_set($cid, $projects);
-      }
-    }
-  }
-  else {
-    // @todo Error here.
+  if (empty($file)) {
+    throw new Exception("No patch file provided.");
   }
 
-  return $projects;
+  $engine = drush_get_option('patch-engine', pathinfo($file, PATHINFO_EXTENSION));
+  if (empty($engine)) {
+    throw new Exception("Unable to find patch engine for $patchfile.");
+  }
+
+  require_once dirname(__FILE__) . '/patchfile.classes.inc';
+  $class = 'DrushPatchFile_' . $engine;
+  if (!class_exists($class)) {
+    throw new Exception("Unable to load patch engine class $class.");
+  }
+
+  return new $class($file, $cache);
 }
 
-function _drush_patchfile_get_file_cid($file) {
-  $params = array();
-  $includes = _drush_patchfile_get_all_files($file);
-  foreach ($includes as $include) {
-    $params[] = $include . ':' . filemtime($include);
-  }
-  return drush_get_cid('patchfile', array(), $params);
-}
-
-/**
- * A copy of make_file_parse_info() but that only returns an array of files.
- *
- * @see make_file_parse_info()
- */
-function _drush_patchfile_get_all_files($makefile) {
-  $data = make_get_data($makefile);
-  if (empty($data)) {
-    drush_set_error('MAKE_INVALID_MAKE_FILE', dt('Invalid or empty make file: !makefile', array('!makefile' => $makefile)));
-    return array();
-  }
-
-  $info = _drush_drupal_parse_info_file($data);
-  if (empty($info)) {
-    return array();
-  }
-
-  $includes = array();
-
-  if (!empty($info['includes']) && is_array($info['includes'])) {
-    $include_path = dirname($makefile);
-    foreach ($info['includes'] as $include) {
-      if (is_string($include)) {
-        if (make_valid_url($include, TRUE) && ($file = _drush_patchfile_get_all_files($include))) {
-          $includes = array_merge($includes, $file);
-        }
-        elseif (file_exists($include_path . '/' . $include) && ($file = _drush_patchfile_get_all_files($include_path . '/' . $include))) {
-          $includes = array_merge($includes, $file);
-        }
-        elseif (file_exists($include) && ($file = _drush_patchfile_get_all_files($include))) {
-          $includes = array_merge($includes, $file);
-        }
-        else {
-          make_error('BUILD_ERROR', dt("Include file missing: !include", array('!include' => $include)));
-        }
-      }
-    }
-  }
-
-  return array_merge(array($makefile), $includes);
-}
-
-function drush_patchfile_parse_info_file($file) {
-  // Parse the patch make file.
-  $info = make_parse_info_file($file);
-
-  if ($info === FALSE) {
-    // Throw fatal error here.
-  }
-
-  if (!empty($info['projects'])) {
-    foreach ($info['projects'] as $project_name => &$project_info) {
-      // Only return projects that have patches listed.
-      if (empty($project_info['patch'])) {
-        unset($info['projects'][$project_name]);
-        continue;
-      }
-
-      // Normalize each patch record.
-      foreach ($project_info['patch'] as &$patch_info) {
-       _drush_patchfile_preprocess_local_file_url($patch_info, $file);
-      }
-    }
-  }
-
-  return $info['projects'];
+function drush_patchfile_get_patched_projects($file = NULL, $cache = FALSE) {
+  return drush_patchfile_engine($file, $cache)->getProjectPatches();
 }
 
 function drush_patchfile_get_project_patches($project_name) {
-  $projects = drush_patchfile_get_patched_projects();
-  return isset($projects[$project_name]) ? $projects[$project_name]['patch'] : FALSE;
+  try {
+    return drush_patchfile_engine()->getProjectPatches($project_name);
+  }
+  catch (Exception $e) {
+    return array();
+  }
 }
 
 /**
@@ -430,15 +356,7 @@ function _drush_patchfile_is_url($url) {
  *   TRUE if the file was appended successfully, or FALSE otherwise.
  */
 function _drush_patchfile_add_patch($project_name, $patch_url, $file) {
-  $output = "\nprojects[{$project_name}][patch][] = \"{$patch_url}\"\n";
-  $result = file_put_contents($file, $output, FILE_APPEND);
-  if ($result !== FALSE) {
-    drush_log(dt('Added patch @patch to @project in @file.', array('@patch' => $patch_url, '@project' => $project_name, '@file' => $file)), 'success');
-    return TRUE;
-  }
-  else {
-    return drush_set_error('DRUSH_MAKE_FILE_NO_WRITE', dt('Unable to append to file @file.', array('@file' => $file)));
-  }
+  return drush_patchfile_engine($file)->addPatch($project_name, $patch_url);
 }
 
 /**
