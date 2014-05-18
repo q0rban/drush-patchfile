@@ -225,7 +225,7 @@ function _drush_patchfile_patch_short_name($patch) {
   return $return;
 }
 
-function drush_patchfile_engine($file = NULL, $cache = TRUE) {
+function drush_patchfile_engine($file = NULL, array $config = array()) {
   if (!isset($file)) {
     $file = drush_get_option('patch-file');
   }
@@ -237,20 +237,20 @@ function drush_patchfile_engine($file = NULL, $cache = TRUE) {
   if (empty($engine)) {
     $engine = drush_get_option('patch-engine', pathinfo($file, PATHINFO_EXTENSION));
     if (empty($engine)) {
-      throw new Exception("Unable to find patch engine for $patchfile.");
+      throw new Exception("Unable to automatically determine the patch engine to use for $patchfile.");
     }
   }
 
-  if ($class = drush_load_engine('patchfile', $engine, NULL, NULL, array('cache' => $cache))) {
-    $class->setFile($file);
-    return $class;
+  if ($instance = drush_load_engine('patchfile', $engine, NULL, NULL, $config)) {
+    $instance->setFile($file);
+    return $instance;
   }
 
   return FALSE;
 }
 
 function drush_patchfile_get_patched_projects($file = NULL, $cache = FALSE) {
-  return drush_patchfile_engine($file, $cache)->getProjectPatches();
+  return drush_patchfile_engine($file, array('cache' => $cache))->getProjectPatches();
 }
 
 function drush_patchfile_get_project_patches($project_name) {
