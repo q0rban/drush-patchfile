@@ -11,7 +11,7 @@
 function patchfile_drush_engine_type_info() {
   $info = array();
   $info['patchfile'] = array(
-    //'description' => 'Output formatting options selection and use.',
+    'description' => 'Patch file engines for reading and adding patch records to and from a file.',
     'option' => 'patchfile-engine',
   );
   return $info;
