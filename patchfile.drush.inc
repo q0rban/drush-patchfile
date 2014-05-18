@@ -6,6 +6,29 @@
  */
 
 /**
+ * Implementation of hook_drush_engine_type_info().
+ */
+function patchfile_drush_engine_type_info() {
+  $info = array();
+  $info['patchfile'] = array(
+    //'description' => 'Output formatting options selection and use.',
+    'option' => 'patchfile-engine',
+  );
+  return $info;
+}
+
+/**
+ * Implements hook_drush_engine_ENGINE_TYPE().
+ */
+function patchfile_drush_engine_patchfile() {
+  $engines = array();
+  $engines['make'] = array(
+    'description' => 'Uses drush make files for patch storage.',
+  );
+  return $engines;
+}
+
+/**
  * Implements hook_drush_command().
  */
 function patchfile_drush_command() {
@@ -206,23 +229,24 @@ function drush_patchfile_engine($file = NULL, $cache = TRUE) {
   if (!isset($file)) {
     $file = drush_get_option('patch-file');
   }
-
   if (empty($file)) {
     throw new Exception("No patch file provided.");
   }
 
-  $engine = drush_get_option('patch-engine', pathinfo($file, PATHINFO_EXTENSION));
+  $engine = drush_get_engine('patchfile');
   if (empty($engine)) {
-    throw new Exception("Unable to find patch engine for $patchfile.");
+    $engine = drush_get_option('patch-engine', pathinfo($file, PATHINFO_EXTENSION));
+    if (empty($engine)) {
+      throw new Exception("Unable to find patch engine for $patchfile.");
+    }
   }
 
-  require_once dirname(__FILE__) . '/patchfile.classes.inc';
-  $class = 'DrushPatchFile_' . $engine;
-  if (!class_exists($class)) {
-    throw new Exception("Unable to load patch engine class $class.");
+  if ($class = drush_load_engine('patchfile', $engine, NULL, NULL, array('cache' => $cache))) {
+    $class->setFile($file);
+    return $class;
   }
 
-  return new $class($file, $cache);
+  return FALSE;
 }
 
 function drush_patchfile_get_patched_projects($file = NULL, $cache = FALSE) {
@@ -465,4 +489,35 @@ function _drush_patchfile_project_apply_patches($project_name, array $patches, $
   //   }
   // }
   return TRUE;
+}
+
+interface DrushPatchFileInterface {
+
+  public function __construct(array $config = array());
+
+  public function getProjectPatches($project_name = NULL);
+
+  public function addPatch($project_name, $patch_url);
+}
+
+abstract class drush_patchfile implements DrushPatchFileInterface {
+  protected $file = NULL;
+  protected $config = array();
+
+  public function __construct(array $config = array()) {
+    $config += array('cache' => TRUE);
+    $this->config = $config;
+  }
+
+  public function setFile($file) {
+    $this->file = $file;
+  }
+
+  public function useCache() {
+    return !empty($this->config['cache']);
+  }
+
+  abstract public function getProjectPatches($project_name = NULL);
+
+  abstract public function addPatch($project_name, $patch_url);
 }

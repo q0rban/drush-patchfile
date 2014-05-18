@@ -1,28 +1,6 @@
 <?php
 
-interface DrushPatchFileInterface {
-  protected $file = NULL;
-  protected $cache = TRUE;
-
-  public function __construct($file, $cache = FALSE);
-
-  public function getProjectPatches($project_name = NULL);
-
-  public function addPatch($project_name, $patch_url);
-}
-
-abstract class DrushPatchFileBase implements DrushPatchFileInterface {
-  public function __construct($file, $cache = FALSE) {
-    $this->file = $file;
-    $this->cache = $cache;
-  }
-
-  abstract public function getProjectPatches($project_name = NULL);
-
-  abstract public function addPatch($project_name, $patch_url);
-}
-
-class DrushPatchFile_make extends DrushPatchFileBase {
+class drush_patchfile_make extends drush_patchfile {
 
   public function getProjectPatches($project_name = NULL) {
     $projects = array();
@@ -31,12 +9,12 @@ class DrushPatchFile_make extends DrushPatchFileBase {
       // Cache not only by filename, but also by the time the file was modified
       // so that a drush cache clear is not necessary to pick up changes.
       $cid = $this->getFileCid($this->file);
-      if ($cid && $this->cache && $cache = drush_cache_get($cid)) {
+      if ($cid && $this->useCache() && $cache = drush_cache_get($cid)) {
         $projects = $cache->data;
       }
       else {
         $projects = $this->parseInfoFile($this->file);
-        if ($cid && $this->cache) {
+        if ($cid && $this->useCache()) {
           drush_cache_set($cid, $projects);
         }
       }
