@@ -75,13 +75,13 @@ class drush_patchfile_make extends drush_patchfile {
       $include_path = dirname($makefile);
       foreach ($info['includes'] as $include) {
         if (is_string($include)) {
-          if (make_valid_url($include, TRUE) && ($file = _drush_patchfile_get_all_files($include))) {
+          if (make_valid_url($include, TRUE) && ($file = $this->getAllFiles($include))) {
             $includes = array_merge($includes, $file);
           }
-          elseif (file_exists($include_path . '/' . $include) && ($file = _drush_patchfile_get_all_files($include_path . '/' . $include))) {
+          elseif (file_exists($include_path . '/' . $include) && ($file = $this->getAllFiles($include_path . '/' . $include))) {
             $includes = array_merge($includes, $file);
           }
-          elseif (file_exists($include) && ($file = _drush_patchfile_get_all_files($include))) {
+          elseif (file_exists($include) && ($file = $this->getAllFiles($include))) {
             $includes = array_merge($includes, $file);
           }
           else {
