@@ -510,6 +510,9 @@ abstract class drush_patchfile implements DrushPatchFileInterface {
   }
 
   public function setFile($file) {
+    if (!is_file($file)) {
+      throw new Exception("The patch file $file does not exist.");
+    }
     $this->file = $file;
   }
 
