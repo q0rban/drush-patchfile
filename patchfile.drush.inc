@@ -12,7 +12,7 @@ function patchfile_drush_engine_type_info() {
   $info = array();
   $info['patchfile'] = array(
     'description' => 'Patch file engines for reading and adding patch records to and from a file.',
-    'option' => 'patchfile-engine',
+    'option' => 'patch-file-engine',
   );
   return $info;
 }
@@ -34,6 +34,7 @@ function patchfile_drush_engine_patchfile() {
 function patchfile_drush_command() {
   $options = array(
     'patch-file' => 'Location of the patch make file.',
+    'patch-file-engine' => 'The engine to use when interacting with the patch file.',
   );
 
   $items['patch-status'] = array(
@@ -161,7 +162,7 @@ function drush_patchfile_patch_add($project_name, $patch_url) {
   _drush_patchfile_preprocess_local_file_url($patch, $file);
 
   // Check to see if this project is already patched with this patch.
-  $projects = drush_patchfile_get_patched_projects($file);
+  $projects = drush_patchfile_get_patched_projects();
   if (isset($projects[$project_name])) {
     if (in_array($patch, $projects[$project_name])) {
       return drush_set_error('DRUSH_PATCH_ALREADY_LISTED', dt("The patch @patch is already listed as a patch for @project in @file.", $args));
@@ -170,7 +171,7 @@ function drush_patchfile_patch_add($project_name, $patch_url) {
 
   if (!drush_get_option('no-apply')) {
     if (_drush_patchfile_project_apply_patches($project_name, array($patch), $project_directory) || drush_get_option('force')) {
-      _drush_patchfile_add_patch($project_name, $patch_url, $file);
+      _drush_patchfile_add_patch($project_name, $patch_url);
     }
     else {
       return FALSE;
@@ -178,7 +179,7 @@ function drush_patchfile_patch_add($project_name, $patch_url) {
   }
   else {
     if (_make_download_file($patch['url']) || drush_get_option('force')) {
-      _drush_patchfile_add_patch($project_name, $patch_url, $file);
+      _drush_patchfile_add_patch($project_name, $patch_url);
     }
     else {
       return drush_set_error('DOWNLOAD_ERROR', dt('Unable to download or fetch @patch.', $args));
@@ -230,27 +231,30 @@ function drush_patchfile_engine($file = NULL, array $config = array()) {
     $file = drush_get_option('patch-file');
   }
   if (empty($file)) {
-    throw new Exception("No patch file provided.");
+    throw new Exception("No patch file provided");
   }
 
-  $engine = drush_get_engine('patchfile');
+  if ($instance = drush_get_engine('patchfile')) {
+    $instance->setFile($file);
+    return $instance;
+  }
+
+  $engine = drush_get_option('patch-file-engine', pathinfo($file, PATHINFO_EXTENSION));
   if (empty($engine)) {
-    $engine = drush_get_option('patch-engine', pathinfo($file, PATHINFO_EXTENSION));
-    if (empty($engine)) {
-      throw new Exception("Unable to automatically determine the patch engine to use for $patchfile.");
-    }
+    throw new Exception("Unable to automatically determine the patch engine to use for $patchfile");
   }
 
   if ($instance = drush_load_engine('patchfile', $engine, NULL, NULL, $config)) {
     $instance->setFile($file);
     return $instance;
   }
-
-  return FALSE;
+  else {
+    throw new Exception("Unable to load patch engine $engine");
+  }
 }
 
-function drush_patchfile_get_patched_projects($file = NULL, $cache = FALSE) {
-  return drush_patchfile_engine($file, array('cache' => $cache))->getProjectPatches();
+function drush_patchfile_get_patched_projects() {
+  return drush_patchfile_engine()->getProjectPatches();
 }
 
 function drush_patchfile_get_project_patches($project_name) {
@@ -386,8 +390,8 @@ function _drush_patchfile_is_url($url) {
  * @return bool
  *   TRUE if the file was appended successfully, or FALSE otherwise.
  */
-function _drush_patchfile_add_patch($project_name, $patch_url, $file) {
-  return drush_patchfile_engine($file)->addPatch($project_name, $patch_url);
+function _drush_patchfile_add_patch($project_name, $patch_url) {
+  return drush_patchfile_engine()->addPatch($project_name, $patch_url);
 }
 
 /**
