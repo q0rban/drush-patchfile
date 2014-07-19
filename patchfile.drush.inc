@@ -81,14 +81,14 @@ function drush_patchfile_patch_status() {
   }
 
   $rows = array();
-  $rows[] = array(dt('Project'), dt('Patch'), dt('Status'));
+  $rows[] = array(dt('Project'), dt('Patch'), dt('Applied'));
 
   foreach ($projects as $project_name => $project_info) {
     $project_directory = drush_patchfile_project_get_directory($project_name);
     $project_extra = '';
 
     if (empty($project_directory)) {
-      $project_extra .= ' ' . dt('(missing)');
+      $project_extra .= ' ' . _drush_patchfile_color('red', dt('(missing)'));
     }
 
     foreach ($project_info as $patch) {
@@ -100,7 +100,7 @@ function drush_patchfile_patch_status() {
     }
   }
 
-  drush_print_table($rows);
+  drush_print_table($rows, TRUE);
 }
 
 /**
@@ -213,7 +213,7 @@ $request = array (
       $dir = $request['full_project_path'];
       $root = drush_get_context('DRUSH_DRUPAL_ROOT');
       if (!empty($root) && strpos($dir, $root) === FALSE) {
-        $dir = $root . '/' . $dir;
+        //$dir = $root . '/' . $dir;
       }
       drush_patchfile_patch_project($request['name'], $dir);
     //}
@@ -318,7 +318,7 @@ function drush_patchfile_is_patch_applied(array $patch, $directory, $nice_format
     $patch_levels = array('-p1', '-p0');
     foreach ($patch_levels as $patch_level) {
       // Test if the patch can be reverted, which would mean it is applied.
-      $result = drush_shell_exec('cd %s && GIT_DIR=. git apply --check -R %s %s --verbose', $directory, $patch_level, $filename);
+      $result = drush_shell_cd_and_exec($directory, 'GIT_DIR=. git apply --check -R %s %s --verbose', $patch_level, $filename);
       //if ($patch_level == '-p1') { echo implode("\n", drush_shell_exec_output()) . "\n"; }
       if ($result) {
         $status = TRUE;
@@ -326,7 +326,7 @@ function drush_patchfile_is_patch_applied(array $patch, $directory, $nice_format
       }
 
       // Test if the patch can be re-applied.
-      $result = drush_shell_exec('cd %s && GIT_DIR=. git apply --check %s %s --verbose', $directory, $patch_level, $filename);
+      $result = drush_shell_cd_and_exec($directory, 'GIT_DIR=. git apply --check %s %s --verbose', $patch_level, $filename);
       //if ($patch_level == '-p1') { echo implode("\n", drush_shell_exec_output()) . "\n"; }
       if ($result) {
         $status = FALSE;
@@ -342,14 +342,29 @@ function drush_patchfile_is_patch_applied(array $patch, $directory, $nice_format
   }
 
   if ($status === TRUE) {
-    return dt('Yes');
+    return _drush_patchfile_color('green', dt('Yes'));
   }
   elseif ($status === FALSE) {
-    return dt('NO');
+    return _drush_patchfile_color('red', dt('No'));
   }
   else {
-    return dt('UNKOWN');
+    return _drush_patchfile_color('yellow', dt('Unsure'));
   }
+}
+
+function _drush_patchfile_color($color, $string) {
+  $colors = array(
+    'red' => 31,
+    'green' => 32,
+    'yellow' => 33,
+    'blue' => 34,
+  );
+
+  if (drush_get_context('DRUSH_NOCOLOR') || !isset($colors[$color])) {
+    return $string;
+  }
+
+  return sprintf("\033[1;%sm%s\033[0m", $colors[$color], $string);
 }
 
 /**
@@ -421,10 +436,10 @@ function _drush_patchfile_project_apply_patches($project_name, array $patches, $
       // http://drupal.org/node/1054616
       $patch_levels = array('-p1', '-p0');
       foreach ($patch_levels as $patch_level) {
-        $checked = drush_shell_exec('cd %s && GIT_DIR=. git apply --check %s %s --verbose', $project_directory, $patch_level, $filename);
+        $checked = drush_shell_cd_and_exec($project_directory, 'GIT_DIR=. git apply --check %s %s --verbose', $patch_level, $filename);
         if ($checked) {
           // Apply the first successful style.
-          $patched = drush_shell_exec('cd %s && GIT_DIR=. git apply %s %s --verbose', $project_directory, $patch_level, $filename);
+          $patched = drush_shell_cd_and_exec($project_directory, 'GIT_DIR=. git apply %s %s --verbose', $project_directory, $patch_level, $filename);
           break;
         }
       }
@@ -435,7 +450,7 @@ function _drush_patchfile_project_apply_patches($project_name, array $patches, $
         foreach ($patch_levels as $patch_level) {
           // --no-backup-if-mismatch here is a hack that fixes some
           // differences between how patch works on windows and unix.
-          if ($patched = drush_shell_exec("patch %s --no-backup-if-mismatch -d %s < %s", $patch_level, $project_directory, $filename)) {
+          if ($patched = drush_shell_cd_and_exec($project_directory, "patch %s --no-backup-if-mismatch < %s", $patch_level, $filename)) {
             break;
           }
         }
