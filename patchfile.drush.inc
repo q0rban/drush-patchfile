@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/src/DrushPatchFileGit.php';
+
 /**
  * @file
  * Drush integration for patch make files.
@@ -69,6 +71,12 @@ function patchfile_drush_command() {
     'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_FULL,
     'aliases' => array('pa'),
   );
+  $items['patch-apply-all'] = array(
+    'description' => 'Apply all patches',
+    'options' => $options,
+    'bootstrap' => DRUSH_BOOTSTRAP_DRUPAL_FULL,
+    'aliases' => array('paa'),
+  );
 
   return $items;
 }
@@ -101,6 +109,21 @@ function drush_patchfile_patch_status() {
   }
 
   drush_print_table($rows, TRUE);
+}
+
+/**
+ * Command callback for drush patch-apply-all
+ */
+function drush_patchfile_patch_apply_all() {
+  $projects = drush_patchfile_get_patched_projects();
+
+  if (empty($projects)) {
+    return drush_print(dt('No patches found.'));
+  }
+
+  foreach ($projects as $project_name => $project_info) {
+    drush_patchfile_patch_project($project_name);
+  }
 }
 
 /**
@@ -144,12 +167,13 @@ function drush_patchfile_patch_project($project_name, $project_directory = NULL)
  * @param string $patch_url
  *   The URL containing the patch file.
  */
-function drush_patchfile_patch_add($project_name, $patch_url) {
+function drush_patchfile_patch_add($project_name, $url) {
   $file = drush_get_option('patch-file');
+  $patch = $url;
 
   $args = array(
     '@project' => $project_name,
-    '@patch' => $patch_url,
+    '@url' => $url,
     '@file' => $file,
   );
 
@@ -158,31 +182,33 @@ function drush_patchfile_patch_add($project_name, $patch_url) {
     return drush_set_error('DRUSH_PROJECT_NOT_FOUND', dt("The project @project was not found.", $args));
   }
 
-  $patch = $patch_url;
   _drush_patchfile_preprocess_local_file_url($patch, $file);
 
   // Check to see if this project is already patched with this patch.
   $projects = drush_patchfile_get_patched_projects();
   if (isset($projects[$project_name])) {
     if (in_array($patch, $projects[$project_name])) {
-      return drush_set_error('DRUSH_PATCH_ALREADY_LISTED', dt("The patch @patch is already listed as a patch for @project in @file.", $args));
+      return drush_set_error('DRUSH_PATCH_ALREADY_LISTED', dt("The patch @url is already listed as a patch for @project in @file.", $args));
     }
   }
 
   if (!drush_get_option('no-apply')) {
     if (_drush_patchfile_project_apply_patches($project_name, array($patch), $project_directory) || drush_get_option('force')) {
-      _drush_patchfile_add_patch($project_name, $patch_url);
+      _drush_patchfile_add_patch($project_name, $patch['url']);
     }
     else {
+      if (drush_confirm("Would you still like to add this patch to the patch file?")) {
+        _drush_patchfile_add_patch($project_name, $url, $file);
+      }
       return FALSE;
     }
   }
   else {
     if (_make_download_file($patch['url']) || drush_get_option('force')) {
-      _drush_patchfile_add_patch($project_name, $patch_url);
+      _drush_patchfile_add_patch($project_name, $patch['url']);
     }
     else {
-      return drush_set_error('DOWNLOAD_ERROR', dt('Unable to download or fetch @patch.', $args));
+      return drush_set_error('DOWNLOAD_ERROR', dt('Unable to download or fetch @url.', $args));
     }
   }
 }
@@ -241,7 +267,7 @@ function drush_patchfile_engine($file = NULL, array $config = array()) {
 
   $engine = drush_get_option('patch-file-engine', pathinfo($file, PATHINFO_EXTENSION));
   if (empty($engine)) {
-    throw new Exception("Unable to automatically determine the patch engine to use for $patchfile");
+    throw new Exception("Unable to automatically determine the patch engine to use for $file");
   }
 
   if ($instance = drush_load_engine('patchfile', $engine, NULL, NULL, $config)) {
@@ -310,41 +336,22 @@ function drush_patchfile_project_get_directory($project_name) {
  *   the patch is applied or not (likely re-roll needed).
  */
 function drush_patchfile_is_patch_applied(array $patch, $directory, $nice_format = FALSE) {
-  // @todo Should we add some kind of caching here based on the patch
-
-  $status = NULL;
+  $applied = NULL;
 
   if ($filename = _make_download_file($patch['url'])) {
-    $patch_levels = array('-p1', '-p0');
-    foreach ($patch_levels as $patch_level) {
-      // Test if the patch can be reverted, which would mean it is applied.
-      $result = drush_shell_cd_and_exec($directory, 'GIT_DIR=. git apply --check -R %s %s --verbose', $patch_level, $filename);
-      //if ($patch_level == '-p1') { echo implode("\n", drush_shell_exec_output()) . "\n"; }
-      if ($result) {
-        $status = TRUE;
-        break;
-      }
-
-      // Test if the patch can be re-applied.
-      $result = drush_shell_cd_and_exec($directory, 'GIT_DIR=. git apply --check %s %s --verbose', $patch_level, $filename);
-      //if ($patch_level == '-p1') { echo implode("\n", drush_shell_exec_output()) . "\n"; }
-      if ($result) {
-        $status = FALSE;
-        break;
-      }
-    }
-
+    $result = DrushPatchFileGit::checkPatch($directory, $filename);
+    $applied = $result['applied'];
     drush_op('unlink', $filename);
   }
 
   if (!$nice_format) {
-    return $status;
+    return $applied;
   }
 
-  if ($status === TRUE) {
+  if ($applied === TRUE) {
     return _drush_patchfile_color('green', dt('Yes'));
   }
-  elseif ($status === FALSE) {
+  elseif ($applied === FALSE) {
     return _drush_patchfile_color('red', dt('No'));
   }
   else {
@@ -376,12 +383,26 @@ function _drush_patchfile_preprocess_local_file_url(&$info, $makefile) {
   if (is_string($info)) {
     $info = array('url' => $info, 'local' => FALSE);
   }
+
   if (!_drush_patchfile_is_url($info['url']) && !drush_is_absolute_path($info['url'])) {
     $info['url'] = dirname($makefile) . '/' . $info['url'];
     $info['local'] = TRUE;
-  } elseif (substr($info['url'], 0, 8) == 'file:///') {
+  }
+  elseif (substr($info['url'], 0, 8) == 'file:///') {
     $info['url'] = substr($info['url'], 7);
     $info['local'] = TRUE;
+  }
+
+  $patches = _drush_patchfile_get_possible_patches_from_url($info['url']);
+  if ($patches !== FALSE) {
+    if (empty($patches)) {
+      throw new Exception("Unable to determine patch file for {$info['url']}.");
+    }
+    else {
+      if ($patch = drush_choice($patches, dt("Which patch do you want to apply?"))) {
+        $info['url'] = $patch;
+      }
+    }
   }
 }
 
@@ -424,42 +445,12 @@ function _drush_patchfile_project_apply_patches($project_name, array $patches, $
 
   $patches_txt = '';
   $local_patches = array();
-  $ignore_checksums = TRUE; // drush_get_option('ignore-checksums');
   foreach ($patches as $info) {
     // $this->preprocessLocalFileUrl($info);
 
     // Download the patch.
     if ($filename = _make_download_file($info['url'])) {
-      $patched = FALSE;
-      $output = '';
-      // Test each patch style; -p1 is the default with git. See
-      // http://drupal.org/node/1054616
-      $patch_levels = array('-p1', '-p0');
-      foreach ($patch_levels as $patch_level) {
-        $checked = drush_shell_cd_and_exec($project_directory, 'GIT_DIR=. git apply --check %s %s --verbose', $patch_level, $filename);
-        if ($checked) {
-          // Apply the first successful style.
-          $patched = drush_shell_cd_and_exec($project_directory, 'GIT_DIR=. git apply %s %s --verbose', $project_directory, $patch_level, $filename);
-          break;
-        }
-      }
-
-      // In some rare cases, git will fail to apply a patch, fallback to using
-      // the 'patch' command.
-      if (!$patched) {
-        foreach ($patch_levels as $patch_level) {
-          // --no-backup-if-mismatch here is a hack that fixes some
-          // differences between how patch works on windows and unix.
-          if ($patched = drush_shell_cd_and_exec($project_directory, "patch %s --no-backup-if-mismatch < %s", $patch_level, $filename)) {
-            break;
-          }
-        }
-      }
-
-      if ($output = drush_shell_exec_output()) {
-        // Log any command output, visible only in --verbose or --debug mode.
-        drush_log(implode("\n", $output));
-      }
+      $patched = DrushPatchFileGit::applyPatch($project_directory, $filename);
 
       // Set up string placeholders to pass to dt().
       $dt_args = array(
@@ -467,10 +458,9 @@ function _drush_patchfile_project_apply_patches($project_name, array $patches, $
         '@filename' => basename($filename),
       );
 
+      drush_op('unlink', $filename);
+
       if ($patched) {
-        // if (!$ignore_checksums && !_make_verify_checksums($info, $filename)) {
-        //    return FALSE;
-        // }
         // $patch_url = $info['url'];
 
         // // If this is a local patch, copy that into place as well.
@@ -486,8 +476,8 @@ function _drush_patchfile_project_apply_patches($project_name, array $patches, $
       }
       else {
         make_error('PATCH_ERROR', dt("Unable to patch @name with @filename.", $dt_args));
+        return FALSE;
       }
-      drush_op('unlink', $filename);
     }
     else {
       drush_set_error('DOWNLOAD_ERROR', dt('Unable to download or fetch @patch.', array('@patch' => $info['url'])));
@@ -542,4 +532,52 @@ abstract class drush_patchfile implements DrushPatchFileInterface {
   abstract public function getProjectPatches($project_name = NULL);
 
   abstract public function addPatch($project_name, $patch_url);
+}
+
+function _drush_patchfile_get_possible_patches_from_url($url) {
+  if (preg_match('~^https?://(?:www\.)?drupal\.org(/node/\d+(#comment-\d+)?)~i', $url, $matches)) {
+    $patches = array();
+    if ($request = @file_get_contents($url)) {
+      $dom = @new DOMDocument();
+      @$dom->loadHTML($request);
+      $xpath = new DOMXpath($dom);
+
+      foreach ($xpath->query("//table[@id='extended-file-field-table-field-issue-files']/tbody/tr[not(contains(concat(' ',normalize-space(@class),' '),' element-hidden '))]") as $element) {
+        $file_xpath = $xpath->query("td[@class='extended-file-field-table-filename']//a", $element);
+        if (!$file_xpath->length) {
+          continue;
+        }
+
+        // If a comment number was provided, then filter the results to only
+        // patches that match the comment.
+        $cid_query = "td[@class='extended-file-field-table-cid']//a";
+        if (!empty($matches[2])) {
+          $cid_query .= "[@href='{$matches[1]}']";
+        }
+        $cid_xpath = $xpath->query($cid_query, $element);
+        if (!$cid_xpath->length) {
+          continue;
+        }
+        $cid = ltrim($cid_xpath->item(0)->textContent, '#');
+
+        $size = $xpath->query("td[@class='extended-file-field-table-filesize']", $element)->item(0)->textContent;
+        $author = $xpath->query("td[@class='extended-file-field-table-uid']//a", $element)->item(0)->textContent;
+
+        $patch_url = $file_xpath->item(0)->getAttribute('href');
+        $patches[$patch_url] = array(
+          'patch' => $file_xpath->item(0)->textContent,
+          'details' =>  sprintf("%10s by %s on comment %d", $size, $author, $cid),
+        );
+      }
+    }
+    return $patches;
+  }
+
+  if (preg_match('~^https://github\.com/[\w-]+/[\w-]+/pull/\d+$~i', $url, $matches)) {
+    if (@file_get_contents($url . '.patch')) {
+      return array($url . '.patch' => $url);
+    }
+  }
+
+  return FALSE;
 }
